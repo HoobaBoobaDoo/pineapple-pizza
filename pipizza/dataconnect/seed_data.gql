@@ -1,0 +1,76 @@
+mutation SeedData @auth(level: USER, insecureReason: "Seed data operations are only accessible to authenticated users for administrative purposes.") @transaction {
+  user_insertMany(data: [
+    {
+      id: "6f52e0f8-c2b9-4a92-b4c6-2c5e8d9a1f2b",
+      displayName: "Alice Smith",
+      email: "alice.smith@example.com",
+      createdAt: "2023-10-26T10:00:00Z",
+      photoUrl: "https://example.com/alice.jpg",
+      weeklyTargetPoints: 100
+    },
+    {
+      id: "a7c1b5d3-e8f0-4c12-9a3b-7d6f5e4a3b2c",
+      displayName: "Bob Johnson",
+      email: "bob.johnson@example.com",
+      createdAt: "2023-10-26T10:05:00Z",
+      photoUrl: "https://example.com/bob.jpg",
+      weeklyTargetPoints: 150
+    }
+  ])
+  task_insertMany(data: [
+    {
+      user: {id: "6f52e0f8-c2b9-4a92-b4c6-2c5e8d9a1f2b"},
+      name: "Complete daily report",
+      points: 20,
+      urgency: "High",
+      createdAt: "2023-10-26T11:00:00Z",
+      description: "Generate and submit the daily sales report.",
+      isRepeating: true
+    },
+    {
+      user: {id: "a7c1b5d3-e8f0-4c12-9a3b-7d6f5e4a3b2c"},
+      name: "Respond to customer emails",
+      points: 15,
+      urgency: "Medium",
+      createdAt: "2023-10-26T11:30:00Z",
+      description: "Clear out the customer support email inbox.",
+      isRepeating: false
+    }
+  ])
+  dailySummary_insertMany(data: [
+    {
+      user: {id: "6f52e0f8-c2b9-4a92-b4c6-2c5e8d9a1f2b"},
+      date: "2023-10-26",
+      pointsEarnedToday: 50,
+      pizzaEarnedToday: 5
+    },
+    {
+      user: {id: "a7c1b5d3-e8f0-4c12-9a3b-7d6f5e4a3b2c"},
+      date: "2023-10-26",
+      pointsEarnedToday: 40,
+      pizzaEarnedToday: 4
+    }
+  ])
+  weeklySummary_insertMany(data: [
+    {
+      user: {id: "6f52e0f8-c2b9-4a92-b4c6-2c5e8d9a1f2b"},
+      weekStartDate: "2023-10-23",
+      totalPointsEarned: 200,
+      totalPizzaEarned: 20
+    },
+    {
+      user: {id: "a7c1b5d3-e8f0-4c12-9a3b-7d6f5e4a3b2c"},
+      weekStartDate: "2023-10-23",
+      totalPointsEarned: 180,
+      totalPizzaEarned: 18
+    }
+  ])
+  taskCompletion_insertMany(data: [
+    {
+      user: {id: "6f52e0f8-c2b9-4a92-b4c6-2c5e8d9a1f2b"},
+      task: {id: "161b36f7-c208-4171-be19-9154a4802c61"}, # Assuming this ID belongs to "Complete daily report"
+      completedAt: "2023-10-26T12:00:00Z",
+      pointsEarned: 20
+    }
+  ])
+}

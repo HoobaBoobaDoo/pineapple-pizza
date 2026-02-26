@@ -1,0 +1,38 @@
+type User @table {
+  displayName: String!
+  createdAt: Timestamp!
+  email: String
+  photoUrl: String
+  weeklyTargetPoints: Int
+}
+
+type Task @table {
+  user: User!
+  name: String!
+  points: Int!
+  urgency: String!
+  createdAt: Timestamp!
+  description: String
+  isRepeating: Boolean
+}
+
+type TaskCompletion @table {
+  user: User!
+  task: Task!
+  completedAt: Timestamp!
+  pointsEarned: Int!
+}
+
+type WeeklySummary @table {
+  user: User!
+  weekStartDate: Date!
+  totalPointsEarned: Int!
+  totalPizzaEarned: Int!
+}
+
+type DailySummary @table {
+  user: User!
+  date: Date!
+  pointsEarnedToday: Int!
+  pizzaEarnedToday: Int!
+}

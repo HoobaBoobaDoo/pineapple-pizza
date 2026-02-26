@@ -1,0 +1,22 @@
+[debug] [2026-02-25T19:03:17.185Z] ----------------------------------------------------------------------
+[debug] [2026-02-25T19:03:17.188Z] Command:       C:\nvm4w\nodejs\node.exe C:\nvm4w\nodejs\node_modules\firebase-tools\lib\bin\firebase.js dataconnect:sdk:generate
+[debug] [2026-02-25T19:03:17.188Z] CLI Version:   15.7.0
+[debug] [2026-02-25T19:03:17.188Z] Platform:      win32
+[debug] [2026-02-25T19:03:17.188Z] Node Version:  v24.10.0
+[debug] [2026-02-25T19:03:17.189Z] Time:          Wed Feb 25 2026 20:03:17 GMT+0100 (Central European Standard Time)
+[debug] [2026-02-25T19:03:17.189Z] ----------------------------------------------------------------------
+[debug] 
+[warn] !  No dataconnect project directory found. 
+[info] i  Running firebase init dataconnect to setup a dataconnect project directory. 
+[info] i  dataconnect: ensuring required API firebasedataconnect.googleapis.com is enabled... 
+[info] i  dataconnect: ensuring required API sqladmin.googleapis.com is enabled... 
+[debug] [2026-02-25T19:03:18.837Z] Checked if tokens are valid: false, expires at: 1772032417367
+[debug] [2026-02-25T19:03:18.837Z] Checked if tokens are valid: false, expires at: 1772032417367
+[debug] [2026-02-25T19:03:18.837Z] > refreshing access token with scopes: []
+[debug] [2026-02-25T19:03:18.839Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-02-25T19:03:18.839Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-25T19:03:19.053Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-02-25T19:03:19.053Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-25T19:03:19.074Z] >>> [apiv2][query] GET https://firebasedataconnect.googleapis.com/v1/projects/pineapple-pizza-ee50c/locations/-/services [none]
+[debug] [2026-02-25T19:03:20.170Z] <<< [apiv2][status] GET https://firebasedataconnect.googleapis.com/v1/projects/pineapple-pizza-ee50c/locations/-/services 200
+[debug] [2026-02-25T19:03:20.170Z] <<< [apiv2][body] GET https://firebasedataconnect.googleapis.com/v1/projects/pineapple-pizza-ee50c/locations/-/services {"services":[{"name":"projects/pineapple-pizza-ee50c/locations/us-east4/services/pipizza","createTime":"2026-02-25T14:20:19.645272236Z","updateTime":"2026-02-25T14:21:48.693226748Z","uid":"08663d84-9f0f-4c00-97c0-6cd2315e6e66","reconciling":false,"etag":"GkKh5F5gT8x6HdlAxdDBfTx4R9TLrRFfTTwvdmH0t6s"}]}

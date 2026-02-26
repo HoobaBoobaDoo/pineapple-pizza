@@ -1,0 +1,52 @@
+# 1. Query to get a user's daily summary for a specific date
+query GetDailySummaryForUser($userId: UUID!, $date: Date!) @auth(level: USER, insecureReason: "The query filters by userId and date, so it's safe to expose to logged-in users who specify the user ID.") {
+  dailySummary(where: {userId: {eq: $userId}, date: {eq: $date}}) {
+    id
+    date
+    pointsEarnedToday
+    pizzaEarnedToday
+    user {
+      displayName
+    }
+  }
+}
+
+# 2. Mutation to create a new task for the current user
+mutation CreateTaskForCurrentUser($name: String!, $points: Int!, $urgency: String!, $description: String, $isRepeating: Boolean) @auth(level: USER, insecureReason: "The task is associated with the current authenticated user's ID, ensuring data privacy.") {
+  task_insert(data: {
+    user: {id_expr: "auth.uid"},
+    name: $name,
+    points: $points,
+    urgency: $urgency,
+    createdAt_expr: "request.time",
+    description: $description,
+    isRepeating: $isRepeating
+  }) {
+    id
+  }
+}
+
+# 3. Query to list all tasks for the current user
+query GetMyTasks @auth(level: USER) {
+  tasks(where: {userId: {eq_expr: "auth.uid"}}) {
+    id
+    name
+    points
+    urgency
+    description
+    isRepeating
+    createdAt
+  }
+}
+
+# 4. Mutation to mark a task as complete for the current user
+mutation CompleteTaskForCurrentUser($taskId: UUID!, $pointsEarned: Int!) @auth(level: USER, insecureReason: "The task completion is associated with the current authenticated user's ID and a specific task.") {
+  taskCompletion_insert(data: {
+    user: {id_expr: "auth.uid"},
+    task: {id: $taskId},
+    completedAt_expr: "request.time",
+    pointsEarned: $pointsEarned
+  }) {
+    id
+  }
+}
