@@ -9,23 +9,19 @@
       ]
     },
     {
-      "collectionGroup": "reviews",
-      "queryScope": "COLLECTION_GROUP",
-      "apiScope": "MONGODB_COMPATIBLE_API",
-      "density": "DENSE",
-      "multikey": false,
+      "collectionGroup": "weeklyTotals",
+      "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "baz", "mode": "ASCENDING" }
+        { "fieldPath": "userId", "mode": "ASCENDING" },
+        { "fieldPath": "weekStart", "mode": "ASCENDING" }
       ]
     },
     {
-      "collectionGroup": "items",
-      "queryScope": "COLLECTION_GROUP",
-      "apiScope": "MONGODB_COMPATIBLE_API",
-      "density": "SPARSE_ANY",
-      "multikey": true,
+      "collectionGroup": "taskCompletions",
+      "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "baz", "mode": "ASCENDING" }
+        { "fieldPath": "userId", "mode": "ASCENDING" },
+        { "fieldPath": "completedAt", "mode": "ASCENDING" }
       ]
     }
   ],
