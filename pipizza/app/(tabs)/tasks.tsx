@@ -1,455 +1,355 @@
-import React, { useEffect, useState } from 'react';
-import { FlatList, TouchableOpacity, Dimensions, Platform, Modal, TextInput, Alert } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import React, { useState, useEffect, useRef } from 'react';
+import { StyleSheet, TouchableOpacity, FlatList, Alert, Modal, TextInput, Dimensions, ScrollView, View } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { collection, query, where, getDocs, addDoc, deleteDoc, doc, updateDoc } from 'firebase/firestore';
-import { db, auth } from '@/lib/AuthContext';
+import { useAuth } from '@/lib/AuthContext';
+import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, orderBy, Timestamp, setDoc, getDoc } from 'firebase/firestore';
+import { Ionicons } from '@expo/vector-icons';
 
-// Task type matching the schema
+const { width } = Dimensions.get('window');
+const isMobile = width < 768;
+const numColumns = isMobile ? 1 : 2;
+
 interface Task {
   id: string;
   name: string;
   points: number;
   urgency: string;
-  description?: string;
-  isRepeating: boolean;
-  createdAt: string;
-  maxDaily?: number;
+  maxDailyCompletions: number;
+  userId: string;
+  createdAt?: any; // Firestore timestamp
 }
 
 interface TaskCompletion {
   id: string;
   taskId: string;
-  completedAt: Date;
-  pointsEarned: number;
+  userId: string;
+  completedAt: Timestamp;
+  points: number;
+}
+
+interface DailyStats {
+  date: string;
+  taskCompletions: { [taskId: string]: number };
+  totalPoints: number;
+  totalCompletions: number;
 }
 
 export default function TasksScreen() {
+  const { user, auth, db } = useAuth();
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [completions, setCompletions] = useState<TaskCompletion[]>([]);
-  const [totalPoints, setTotalPoints] = useState(0);
-  const [weeklyTotalDocId, setWeeklyTotalDocId] = useState<string | null>(null);
+  const [taskCompletions, setTaskCompletions] = useState<TaskCompletion[]>([]);
+  const [weeklyStats, setWeeklyStats] = useState<DailyStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskName, setTaskName] = useState('');
-  const [urgency, setUrgency] = useState('3');
   const [points, setPoints] = useState('');
-  const [maxDaily, setMaxDaily] = useState('');
+  const [urgency, setUrgency] = useState('3');
+  const [maxDailyCompletions, setMaxDailyCompletions] = useState('');
+  const [dropdownVisible, setDropdownVisible] = useState(false);
+  const [dropdownTaskId, setDropdownTaskId] = useState<string | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState({ x: 0, y: 0 });
+  const dropdownButtonRefs = useRef<{ [key: string]: React.ComponentRef<typeof TouchableOpacity> | null }>({});
 
-  const { width } = Dimensions.get('window');
-  const isMobile = width < 768;
-
-  const getStartOfWeek = (date: Date = new Date()) => {
-    const startOfWeek = new Date(date);
-    startOfWeek.setDate(date.getDate() - date.getDay() + 1); // Monday
-    startOfWeek.setHours(0, 0, 0, 0);
-    return startOfWeek;
+  const showDropdown = (taskId: string, ref: React.ComponentRef<typeof TouchableOpacity> | null) => {
+    setDropdownTaskId(taskId);
+    
+    if (ref) {
+      ref.measure((x: number, y: number, width: number, height: number, pageX: number, pageY: number) => {
+        setDropdownPosition({ x: pageX - 120, y: pageY + height + 5 });
+        setDropdownVisible(true);
+      });
+    } else {
+      setDropdownVisible(true);
+    }
   };
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [limitModalVisible, setLimitModalVisible] = useState(false);
+  const [pendingCompletion, setPendingCompletion] = useState<{ taskId: string; points: number } | null>(null);
 
-  const fetchData = async () => {
+  useEffect(() => {
+    if (user) {
+      fetchTasks();
+      fetchCompletions();
+      fetchWeeklyStats();
+    }
+  }, [user]);
+
+  const fetchTasks = async () => {
     if (!auth.currentUser) return;
     try {
-      // Fetch tasks
-      const tasksQuery = query(collection(db, 'tasks'), where('userId', '==', auth.currentUser.uid));
-      const tasksSnapshot = await getDocs(tasksQuery);
-      const tasksData = tasksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task));
-      setTasks(tasksData);
-
-      // Get current week start
-      const weekStart = getStartOfWeek();
-      
-      // Fetch this week's completions (Monday to Sunday)
-      const endOfWeek = new Date(weekStart);
-      endOfWeek.setDate(weekStart.getDate() + 7); // Next Monday
-
-      const completionsQuery = query(
-        collection(db, 'taskCompletions'),
-        where('userId', '==', auth.currentUser.uid),
-        where('completedAt', '>=', weekStart),
-        where('completedAt', '<', endOfWeek)
-      );
-      const completionsSnapshot = await getDocs(completionsQuery);
-      const completionsData = completionsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        completedAt: doc.data().completedAt.toDate()
-      } as TaskCompletion));
-      setCompletions(completionsData);
-
-      // Calculate total points for this week
-      const calculatedTotal = completionsData.reduce((sum, completion) => sum + completion.pointsEarned, 0);
-
-      // Fetch or create weekly total document
-      const weeklyTotalsQuery = query(
-        collection(db, 'weeklyTotals'),
-        where('userId', '==', auth.currentUser.uid),
-        where('weekStart', '==', weekStart)
-      );
-      const weeklyTotalsSnapshot = await getDocs(weeklyTotalsQuery);
-
-      // Use calculated total as the source of truth, but sync with stored total
-      let weeklyTotal = calculatedTotal;
-      
-      if (weeklyTotalsSnapshot.empty) {
-        // Create new weekly total document
-        const newWeeklyTotal = await addDoc(collection(db, 'weeklyTotals'), {
-          userId: auth.currentUser.uid,
-          weekStart: weekStart,
-          totalPoints: calculatedTotal,
-          lastUpdated: new Date()
+      const q = query(collection(db, 'tasks'), where('userId', '==', auth.currentUser.uid));
+      const snapshot = await getDocs(q);
+      const tasksData = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Task))
+        .sort((a, b) => {
+          const aTime = a.createdAt?.toDate?.() || new Date(0);
+          const bTime = b.createdAt?.toDate?.() || new Date(0);
+          return bTime.getTime() - aTime.getTime(); // Sort by createdAt desc
         });
-        setWeeklyTotalDocId(newWeeklyTotal.id);
-      } else {
-        // Update existing document if total doesn't match
-        const weeklyTotalDoc = weeklyTotalsSnapshot.docs[0];
-        setWeeklyTotalDocId(weeklyTotalDoc.id);
-        if (weeklyTotalDoc.data().totalPoints !== calculatedTotal) {
-          await updateDoc(doc(db, 'weeklyTotals', weeklyTotalDoc.id), {
-            totalPoints: calculatedTotal,
-            lastUpdated: new Date()
-          });
-        }
-      }
-      setTotalPoints(weeklyTotal);
+      setTasks(tasksData);
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching tasks:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  const fetchCompletions = async () => {
+    if (!auth.currentUser) return;
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const q = query(
+        collection(db, 'taskCompletions'),
+        where('userId', '==', auth.currentUser.uid),
+        where('completedAt', '>=', Timestamp.fromDate(today))
+      );
+      const snapshot = await getDocs(q);
+      const completionsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TaskCompletion));
+      setTaskCompletions(completionsData);
+    } catch (error) {
+      console.error('Error fetching completions:', error);
+    }
+  };
+
+  const fetchWeeklyStats = async () => {
+    if (!auth.currentUser) return;
+    try {
+      // Fetch all stats for the user and filter/sort in memory to avoid index requirements
+      const q = query(collection(db, 'dailyStats'), where('userId', '==', auth.currentUser.uid));
+      const snapshot = await getDocs(q);
+
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+      const sevenDaysAgoStr = sevenDaysAgo.toISOString().split('T')[0];
+
+      const statsData = snapshot.docs
+        .map(doc => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            date: data.date || '',
+            taskCompletions: data.taskCompletions || {},
+            totalPoints: data.totalPoints || 0,
+            totalCompletions: data.totalCompletions || 0,
+            userId: data.userId || ''
+          } as DailyStats;
+        })
+        .filter(stat => stat.date >= sevenDaysAgoStr) // Filter to last 7 days
+        .sort((a, b) => b.date.localeCompare(a.date)); // Sort by date desc
+
+      setWeeklyStats(statsData);
+    } catch (error) {
+      console.error('Error fetching weekly stats:', error);
+    }
+  };
+
+  const getWeeklyTotal = () => {
+    return weeklyStats.reduce((total, day) => total + day.totalPoints, 0);
+  };
+
+  const getTodayCompletions = (taskId: string) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return taskCompletions.filter(
+      c => c.taskId === taskId && c.completedAt.toDate() >= today
+    ).length;
+  };
 
   const completeTask = async (taskId: string, points: number) => {
     if (!auth.currentUser) return;
-    
-    // Find the task to check maxDaily limit
+
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
-    
-    // Check if we've reached the max daily limit
-    // Default to unlimited (99999999) completions per day if no maxDaily is set, max 100 for set values
-    let maxCompletions = 99999999; // Default to unlimited
-    if (task.maxDaily && !isNaN(Number(task.maxDaily))) {
-      const num = Number(task.maxDaily);
-      if (num > 0) {
-        maxCompletions = Math.min(num, 100); // Cap at 100 for set values to prevent abuse
-      }
-    }
-    const taskCompletions = completions.filter(c => c.taskId === taskId);
-    if (taskCompletions.length >= maxCompletions) {
-      Alert.alert('Limit Reached', `You can only complete this task ${maxCompletions} times per day.`);
+
+    const todayCompletions = getTodayCompletions(taskId);
+    if (todayCompletions >= task.maxDailyCompletions) {
+      setPendingCompletion({ taskId, points });
+      setLimitModalVisible(true);
       return;
     }
-    
+
     try {
       await addDoc(collection(db, 'taskCompletions'), {
+        taskId,
         userId: auth.currentUser.uid,
-        taskId,
-        completedAt: new Date(),
-        pointsEarned: points,
+        completedAt: Timestamp.now(),
+        points
       });
-      // Update local state
-      const newCompletions = [...completions, {
-        id: 'temp-' + Date.now(), // Temporary ID
-        taskId,
-        completedAt: new Date(),
-        pointsEarned: points
-      }];
-      setCompletions(newCompletions);
-      const newTotal = newCompletions.reduce((sum, completion) => sum + completion.pointsEarned, 0);
-      setTotalPoints(newTotal);
-
-      // Update weekly total in Firestore
-      if (weeklyTotalDocId) {
-        await updateDoc(doc(db, 'weeklyTotals', weeklyTotalDocId), {
-          totalPoints: newTotal,
-          lastUpdated: new Date()
-        });
-      }
+      fetchCompletions();
+      updateDailyStats(taskId, points, true);
     } catch (error) {
       console.error('Error completing task:', error);
+      Alert.alert('Error', 'Failed to complete task');
+    }
+  };
+
+  const forceCompleteTask = async () => {
+    if (!pendingCompletion || !auth.currentUser) return;
+
+    try {
+      await addDoc(collection(db, 'taskCompletions'), {
+        taskId: pendingCompletion.taskId,
+        userId: auth.currentUser.uid,
+        completedAt: Timestamp.now(),
+        points: pendingCompletion.points
+      });
+      fetchCompletions();
+      updateDailyStats(pendingCompletion.taskId, pendingCompletion.points, true);
+      setLimitModalVisible(false);
+      setPendingCompletion(null);
+    } catch (error) {
+      console.error('Error completing task:', error);
+      Alert.alert('Error', 'Failed to complete task');
+    }
+  };
+
+  const updateDailyStats = async (taskId: string, points: number, isAddition: boolean = true) => {
+    if (!auth.currentUser) return;
+
+    const today = new Date().toISOString().split('T')[0];
+    const statsRef = doc(db, 'dailyStats', `${auth.currentUser.uid}_${today}`);
+
+    try {
+      const statsDoc = await getDoc(statsRef);
+      if (statsDoc.exists()) {
+        const currentStats = statsDoc.data() as DailyStats;
+        const newTotalPoints = isAddition ? currentStats.totalPoints + points : currentStats.totalPoints - points;
+        const newTotalCompletions = isAddition ? currentStats.totalCompletions + 1 : currentStats.totalCompletions - 1;
+        const newTaskCompletions = { ...currentStats.taskCompletions };
+        newTaskCompletions[taskId] = (newTaskCompletions[taskId] || 0) + (isAddition ? 1 : -1);
+        if (newTaskCompletions[taskId] <= 0) delete newTaskCompletions[taskId];
+
+        await updateDoc(statsRef, {
+          totalPoints: Math.max(0, newTotalPoints),
+          totalCompletions: Math.max(0, newTotalCompletions),
+          taskCompletions: newTaskCompletions
+        });
+      } else {
+        // Create new daily stats
+        const taskCompletions = isAddition ? { [taskId]: 1 } : {};
+        await setDoc(statsRef, {
+          userId: auth.currentUser.uid,
+          date: today,
+          taskCompletions,
+          totalPoints: isAddition ? points : 0,
+          totalCompletions: isAddition ? 1 : 0
+        });
+      }
+      fetchWeeklyStats();
+    } catch (error) {
+      console.error('Error updating daily stats:', error);
     }
   };
 
   const removeCompletion = async (taskId: string, points: number) => {
     if (!auth.currentUser) return;
+
+    const todayCompletions = taskCompletions.filter(
+      c => c.taskId === taskId && c.completedAt.toDate().toDateString() === new Date().toDateString()
+    );
+
+    if (todayCompletions.length === 0) return;
+
     try {
-      // Find the most recent completion for this task
-      const taskCompletions = completions.filter(c => c.taskId === taskId);
-      if (taskCompletions.length === 0) return;
-
-      const mostRecent = taskCompletions[taskCompletions.length - 1];
-      await deleteDoc(doc(db, 'taskCompletions', mostRecent.id));
-
-      // Update local state
-      const newCompletions = completions.filter(c => c.id !== mostRecent.id);
-      setCompletions(newCompletions);
-      const newTotal = newCompletions.reduce((sum, completion) => sum + completion.pointsEarned, 0);
-      setTotalPoints(newTotal);
-
-      // Update weekly total in Firestore
-      if (weeklyTotalDocId) {
-        await updateDoc(doc(db, 'weeklyTotals', weeklyTotalDocId), {
-          totalPoints: newTotal,
-          lastUpdated: new Date()
-        });
-      }
+      await deleteDoc(doc(db, 'taskCompletions', todayCompletions[todayCompletions.length - 1].id));
+      fetchCompletions();
+      updateDailyStats(taskId, points, false);
     } catch (error) {
       console.error('Error removing completion:', error);
+      Alert.alert('Error', 'Failed to remove completion');
     }
   };
 
-  const simulateWeekPass = async () => {
+  const simulateDayPass = async () => {
     if (!auth.currentUser) return;
-    
-    try {
-      // Calculate current week boundaries
-      const now = new Date();
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(now.getDate() - now.getDay() + 1); // Monday
-      startOfWeek.setHours(0, 0, 0, 0);
-      
-      const endOfWeek = new Date(startOfWeek);
-      endOfWeek.setDate(startOfWeek.getDate() + 7); // Next Monday
 
-      // Delete all completions for this week
-      const deletePromises = completions.map(completion => 
-        deleteDoc(doc(db, 'taskCompletions', completion.id))
+    try {
+      // Store daily statistics
+      const today = new Date().toISOString().split('T')[0];
+      const todayCompletions = taskCompletions.filter(
+        c => c.completedAt.toDate().toDateString() === new Date().toDateString()
       );
-      
-      await Promise.all(deletePromises);
-      
-      // Reset local state
-      setCompletions([]);
-      setTotalPoints(0);
-      
-      // Reset weekly total in Firestore
-      if (weeklyTotalDocId) {
-        await updateDoc(doc(db, 'weeklyTotals', weeklyTotalDocId), {
-          totalPoints: 0,
-          lastUpdated: new Date()
-        });
-      }
-      
-      Alert.alert('Week Reset', 'All weekly completions have been reset!');
-    } catch (error) {
-      console.error('Error resetting week:', error);
-      Alert.alert('Error', 'Failed to reset week');
-    }
-  };
 
-  const addTask = async () => {
-    if (!auth.currentUser) return;
-    
-    // Validation
-    if (!taskName.trim()) {
-      Alert.alert('Error', 'Please enter a task name');
-      return;
-    }
-    const pointsNum = parseInt(points);
-    if (isNaN(pointsNum) || pointsNum <= 0) {
-      Alert.alert('Error', 'Please enter a valid number of points');
-      return;
-    }
-    let maxDailyNum: number | undefined;
-    if (maxDaily.trim() !== '') {
-      maxDailyNum = Math.min(parseInt(maxDaily), 100);
-      if (isNaN(maxDailyNum) || maxDailyNum <= 0) {
-        Alert.alert('Error', 'Please enter a valid max daily amount (1-100)');
-        return;
-      }
-    }
-    const urgencyNum = parseInt(urgency);
-    if (isNaN(urgencyNum) || urgencyNum < 1 || urgencyNum > 5) {
-      Alert.alert('Error', 'Please select a valid urgency (1-5)');
-      return;
-    }
+      const stats: DailyStats = {
+        date: today,
+        taskCompletions: {},
+        totalPoints: 0,
+        totalCompletions: todayCompletions.length
+      };
 
-    try {
-      await addDoc(collection(db, 'tasks'), {
-        userId: auth.currentUser.uid,
-        name: taskName.trim(),
-        points: pointsNum,
-        urgency: urgencyNum.toString(),
-        isRepeating: true,
-        createdAt: new Date(),
-        maxDaily: maxDailyNum,
+      todayCompletions.forEach(completion => {
+        stats.taskCompletions[completion.taskId] = (stats.taskCompletions[completion.taskId] || 0) + 1;
+        stats.totalPoints += completion.points;
       });
 
-      // Reset form and close modal
-      setTaskName('');
-      setUrgency('3');
-      setPoints('');
-      setMaxDaily('');
-      setModalVisible(false);
+      await addDoc(collection(db, 'dailyStats'), {
+        ...stats,
+        userId: auth.currentUser.uid
+      });
 
-      // Refresh tasks
-      await fetchData();
+      // Clear today's completions
+      const deletePromises = todayCompletions.map(completion =>
+        deleteDoc(doc(db, 'taskCompletions', completion.id))
+      );
+      await Promise.all(deletePromises);
+
+      fetchCompletions();
+      fetchWeeklyStats();
+      Alert.alert('Day Passed', `You earned ${stats.totalPoints} points today!`);
     } catch (error) {
-      console.error('Error adding task:', error);
-      Alert.alert('Error', 'Failed to add task');
+      console.error('Error simulating day pass:', error);
+      Alert.alert('Error', 'Failed to simulate day pass');
     }
+  };
+
+  const renderUrgencyIndicator = (urgency: string) => {
+    if (urgency === '1') return null;
+    if (urgency === '2') return <ThemedText style={styles.urgencyIndicator}>II</ThemedText>;
+    if (urgency === '3') return <ThemedText style={styles.urgencyIndicator}>III</ThemedText>;
+    return null;
   };
 
   const renderTask = ({ item }: { item: Task }) => {
-    const taskCompletions = completions.filter(c => c.taskId === item.id);
-    const completionCount = taskCompletions.length;
-    let maxCompletions = 99999999; // Default to unlimited
-    if (item.maxDaily && !isNaN(Number(item.maxDaily))) {
-      const num = Number(item.maxDaily);
-      if (num > 0) {
-        maxCompletions = Math.min(num, 100); // Cap at 100 for set values to prevent abuse
-      }
-    }
-    const isAtLimit = completionCount >= maxCompletions;
-    const isUnlimited = maxCompletions === 99999999;
-
-    // Color coding based on urgency
-    const urgencyColors = {
-      '1': '#FF6B6B', // Red for high urgency
-      '2': '#FFA726', // Orange
-      '3': '#42A5F5', // Blue for medium
-      '4': '#66BB6A', // Green
-      '5': '#AB47BC'  // Purple for low urgency
-    };
-
-    const urgencyColor = urgencyColors[item.urgency as keyof typeof urgencyColors] || '#42A5F5';
+    const todayCompletions = getTodayCompletions(item.id);
 
     return (
-      <ThemedView style={{
-        marginHorizontal: isMobile ? 10 : 20,
-        marginVertical: 8,
-        backgroundColor: '#1E1E1E',
-        borderRadius: 16,
-        padding: 20,
-        boxShadow: '0px 2px 8px rgba(0,0,0,0.3)',
-        elevation: 4,
-        borderLeftWidth: 4,
-        borderLeftColor: urgencyColor,
-      }}>
-        <ThemedView style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <ThemedView style={{ flex: 1, marginRight: 15 }}>
-            <ThemedText style={{
-              fontSize: 18,
-              fontWeight: 'bold',
-              color: '#FFFFFF',
-              marginBottom: 6
-            }}>
-              {item.name}
-            </ThemedText>
+      <ThemedView style={styles.taskContainer}>
+        <TouchableOpacity
+          ref={(ref) => {
+            dropdownButtonRefs.current[item.id] = ref;
+          }}
+          onPress={() => showDropdown(item.id, dropdownButtonRefs.current[item.id])}
+          style={styles.menuButton}
+        >
+          <Ionicons name="ellipsis-vertical" size={16} color="#FFFFFF" />
+        </TouchableOpacity>
 
-            <ThemedView style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-              <ThemedView style={{
-                backgroundColor: '#FFD700',
-                borderRadius: 12,
-                paddingHorizontal: 8,
-                paddingVertical: 2,
-                marginRight: 8
-              }}>
-                <ThemedText style={{ fontSize: 12, fontWeight: 'bold', color: '#2C3E50' }}>
-                  {item.points} pts
-                </ThemedText>
-              </ThemedView>
-
-              <ThemedView style={{
-                backgroundColor: urgencyColor,
-                borderRadius: 12,
-                paddingHorizontal: 8,
-                paddingVertical: 2,
-                marginRight: 8
-              }}>
-                <ThemedText style={{ fontSize: 12, fontWeight: 'bold', color: 'white' }}>
-                  Urgency {item.urgency}
-                </ThemedText>
-              </ThemedView>
-
-              <ThemedView style={{
-                backgroundColor: isAtLimit ? '#EF5350' : '#81C784',
-                borderRadius: 12,
-                paddingHorizontal: 8,
-                paddingVertical: 2
-              }}>
-                <ThemedText style={{ fontSize: 12, fontWeight: 'bold', color: 'white' }}>
-                  {completionCount}/{isUnlimited ? '∞' : maxCompletions}
-                </ThemedText>
-              </ThemedView>
+        <ThemedView style={styles.taskCard}>
+          <ThemedView style={styles.taskContent}>
+            <ThemedView style={styles.taskHeader}>
+              <ThemedText style={styles.taskTitle}>{item.name}</ThemedText>
+              {renderUrgencyIndicator(item.urgency)}
             </ThemedView>
-
-            {item.description && (
-              <ThemedText style={{
-                fontSize: 14,
-                color: '#B0B0B0',
-                lineHeight: 20
-              }}>
-                {item.description}
-              </ThemedText>
-            )}
+            <ThemedText style={styles.taskPoints}>{item.points || 0} pts</ThemedText>
           </ThemedView>
 
-          <ThemedView style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            backgroundColor: isAtLimit ? '#2D1818' : '#1B2D1B',
-            borderRadius: 25,
-            paddingHorizontal: 12,
-            paddingVertical: 8,
-            borderWidth: 2,
-            borderColor: isAtLimit ? '#EF5350' : '#4CAF50'
-          }}>
-            <ThemedText style={{
-              fontSize: 18,
-              fontWeight: 'bold',
-              color: isAtLimit ? '#FF8A80' : '#81C784',
-              marginRight: 12,
-              minWidth: 20,
-              textAlign: 'center'
-            }}>
-              {completionCount}
-            </ThemedText>
-
+          <ThemedView style={styles.taskActions}>
             <TouchableOpacity
-              onPress={() => completeTask(item.id, item.points)}
-              disabled={isAtLimit}
-              style={{
-                backgroundColor: isAtLimit ? '#424242' : '#4CAF50',
-                borderRadius: 20,
-                width: 40,
-                height: 40,
-                justifyContent: 'center',
-                alignItems: 'center',
-                marginRight: 8,
-                boxShadow: '0px 1px 2px rgba(0,0,0,0.3)',
-                elevation: 2
-              }}
+              onPress={() => completeTask(item.id, item.points || 0)}
+              style={styles.addButton}
             >
-              <ThemedText style={{ color: 'white', fontSize: 24, fontWeight: 'bold' }}>+</ThemedText>
+              <ThemedText style={styles.buttonText}>+</ThemedText>
             </TouchableOpacity>
 
             <TouchableOpacity
-              onPress={() => removeCompletion(item.id, item.points)}
-              disabled={completionCount === 0}
-              style={{
-                backgroundColor: completionCount === 0 ? '#424242' : '#F44336',
-                borderRadius: 20,
-                width: 40,
-                height: 40,
-                justifyContent: 'center',
-                alignItems: 'center',
-                boxShadow: '0px 1px 2px rgba(0,0,0,0.3)',
-                elevation: 2
-              }}
+              onPress={() => removeCompletion(item.id, item.points || 0)}
+              style={styles.removeButton}
             >
-              <ThemedText style={{
-                color: completionCount === 0 ? '#757575' : 'white',
-                fontSize: 24,
-                fontWeight: 'bold'
-              }}>
-                −
-              </ThemedText>
+              <ThemedText style={styles.buttonText}>-</ThemedText>
             </TouchableOpacity>
           </ThemedView>
         </ThemedView>
@@ -457,132 +357,165 @@ export default function TasksScreen() {
     );
   };
 
+  const createTask = async () => {
+    if (!auth.currentUser || !taskName.trim() || !points.trim() || !maxDailyCompletions.trim()) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    const pointsNum = parseInt(points);
+    const maxCompletionsNum = parseInt(maxDailyCompletions);
+    const urgencyNum = parseInt(urgency);
+
+    if (isNaN(pointsNum) || pointsNum <= 0) {
+      Alert.alert('Error', 'Please enter a valid number of points');
+      return;
+    }
+
+    if (isNaN(maxCompletionsNum) || maxCompletionsNum <= 0) {
+      Alert.alert('Error', 'Please enter a valid maximum daily completions');
+      return;
+    }
+
+    if (isNaN(urgencyNum) || urgencyNum < 1 || urgencyNum > 3) {
+      Alert.alert('Error', 'Please enter urgency between 1-3');
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, 'tasks'), {
+        name: taskName.trim(),
+        points: pointsNum,
+        urgency: urgencyNum.toString(),
+        maxDailyCompletions: maxCompletionsNum,
+        userId: auth.currentUser.uid,
+        createdAt: Timestamp.now()
+      });
+
+      setModalVisible(false);
+      setTaskName('');
+      setPoints('');
+      setUrgency('3');
+      setMaxDailyCompletions('');
+      fetchTasks();
+    } catch (error) {
+      console.error('Error creating task:', error);
+      Alert.alert('Error', 'Failed to create task');
+    }
+  };
+
+  const editTask = async () => {
+    if (!selectedTask || !taskName.trim() || !points.trim() || !maxDailyCompletions.trim()) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    const pointsNum = parseInt(points);
+    const maxCompletionsNum = parseInt(maxDailyCompletions);
+    const urgencyNum = parseInt(urgency);
+
+    if (isNaN(pointsNum) || pointsNum <= 0) {
+      Alert.alert('Error', 'Please enter a valid number of points');
+      return;
+    }
+
+    if (isNaN(maxCompletionsNum) || maxCompletionsNum <= 0) {
+      Alert.alert('Error', 'Please enter a valid maximum daily completions');
+      return;
+    }
+
+    if (isNaN(urgencyNum) || urgencyNum < 1 || urgencyNum > 3) {
+      Alert.alert('Error', 'Please enter urgency between 1-3');
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'tasks', selectedTask.id), {
+        name: taskName.trim(),
+        points: pointsNum,
+        urgency: urgencyNum.toString(),
+        maxDailyCompletions: maxCompletionsNum,
+      });
+
+      setEditModalVisible(false);
+      setSelectedTask(null);
+      setTaskName('');
+      setPoints('');
+      setUrgency('3');
+      setMaxDailyCompletions('');
+      fetchTasks();
+    } catch (error) {
+      console.error('Error updating task:', error);
+      Alert.alert('Error', 'Failed to update task');
+    }
+  };
+
+  const toggleUrgency = async (taskId: string) => {
+    try {
+      const taskRef = doc(db, 'tasks', taskId);
+      const taskDoc = await getDoc(taskRef);
+      if (taskDoc.exists()) {
+        const currentUrgency = taskDoc.data().urgency || '3';
+        const newUrgency = currentUrgency === '1' ? '3' : '1'; // Toggle between enabled (3) and disabled (1)
+        await updateDoc(taskRef, { urgency: newUrgency });
+        fetchTasks();
+      }
+    } catch (error) {
+      console.error('Error toggling urgency:', error);
+      Alert.alert('Error', 'Failed to toggle urgency');
+    }
+  };
+
+  const deleteTask = async () => {
+    setDeleteModalVisible(true);
+  };
+
+  const confirmDeleteTask = async () => {
+    if (!selectedTask) return;
+
+    try {
+      await deleteDoc(doc(db, 'tasks', selectedTask.id));
+
+      // Delete all completions for this task
+      const completionsQuery = query(
+        collection(db, 'taskCompletions'),
+        where('taskId', '==', selectedTask.id)
+      );
+      const completionsSnapshot = await getDocs(completionsQuery);
+      const deletePromises = completionsSnapshot.docs.map(doc => deleteDoc(doc.ref));
+      await Promise.all(deletePromises);
+
+      setDeleteModalVisible(false);
+      setEditModalVisible(false);
+      setSelectedTask(null);
+      fetchTasks();
+      fetchCompletions();
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      Alert.alert('Error', 'Failed to delete task');
+    }
+  };
+
   if (loading) {
     return (
-      <ThemedView style={{
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: '#121212'
-      }}>
-        <ThemedView style={{
-          backgroundColor: '#1E1E1E',
-          borderRadius: 20,
-          padding: 30,
-          alignItems: 'center',
-          boxShadow: '0px 4px 8px rgba(0,0,0,0.3)',
-          elevation: 4
-        }}>
-          <Ionicons name="hourglass" size={48} color="#FFFFFF" style={{ marginBottom: 20 }} />
-          <ThemedText style={{
-            fontSize: 18,
-            fontWeight: '600',
-            color: '#FFFFFF',
-            textAlign: 'center'
-          }}>
-            Loading your tasks...
-          </ThemedText>
+      <ThemedView style={styles.container}>
+        <ThemedView style={styles.loadingContainer}>
+          <Ionicons name="hourglass" size={48} color="#FFFFFF" />
+          <ThemedText style={styles.loadingText}>Loading your tasks...</ThemedText>
         </ThemedView>
       </ThemedView>
     );
   }
 
   return (
-    <ThemedView style={{ flex: 1, backgroundColor: '#121212' }}>
-      <ThemedView style={{
-        backgroundColor: 'linear-gradient(135deg, #1E3A8A 0%, #3730A3 50%, #581C87 100%)',
-        paddingTop: 50,
-        paddingBottom: 30,
-        paddingHorizontal: 20,
-        alignItems: 'center',
-        boxShadow: '0px 4px 8px rgba(0,0,0,0.5)',
-        elevation: 8
-      }}>
-        <ThemedView style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20 }}>
-          <Ionicons name="clipboard" size={32} color="white" style={{ marginRight: 10 }} />
-          <ThemedText style={{
-            fontSize: 32,
-            fontWeight: 'bold',
-            color: 'white'
-          }}>
-            Tasks
-          </ThemedText>
+    <ThemedView style={styles.container}>
+      <ThemedView style={styles.header}>
+        <ThemedView style={styles.headerLeft}>
+          <ThemedText style={styles.headerTitle}>My Tasks</ThemedText>
+          <ThemedText style={styles.weeklyTotal}>Week: {getWeeklyTotal()} pts</ThemedText>
         </ThemedView>
-
-        {/* Prominent Score Display */}
-        <ThemedView style={{
-          backgroundColor: 'rgba(255, 255, 255, 0.1)',
-          borderWidth: 2,
-          borderColor: 'rgba(255, 255, 255, 0.2)',
-          paddingHorizontal: 40,
-          paddingVertical: 20,
-          borderRadius: 30,
-          marginBottom: 25,
-          boxShadow: '0px 4px 6px rgba(0,0,0,0.4)',
-          elevation: 6,
-          backdropFilter: 'blur(10px)'
-        }}>
-          <ThemedText style={{
-            color: 'white',
-            fontSize: 28,
-            fontWeight: 'bold',
-            textAlign: 'center'
-          }}>
-            {totalPoints} Points This Week
-          </ThemedText>
-          <ThemedText style={{
-            color: 'rgba(255, 255, 255, 0.7)',
-            fontSize: 14,
-            textAlign: 'center',
-            marginTop: 5
-          }}>
-            Keep it up!
-          </ThemedText>
-        </ThemedView>
-
-        <TouchableOpacity
-          onPress={() => setModalVisible(true)}
-          style={{
-            backgroundColor: 'rgba(255, 255, 255, 0.15)',
-            paddingHorizontal: 30,
-            paddingVertical: 15,
-            borderRadius: 25,
-            boxShadow: '0px 3px 5px rgba(0,0,0,0.4)',
-            elevation: 5,
-            borderWidth: 1,
-            borderColor: 'rgba(255, 255, 255, 0.3)',
-            marginBottom: 15
-          }}
-        >
-          <ThemedText style={{
-            color: 'white',
-            fontSize: 16,
-            fontWeight: 'bold'
-          }}>
-            <Ionicons name="add-circle" size={16} color="white" /> Add New Task
-          </ThemedText>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={simulateWeekPass}
-          style={{
-            backgroundColor: 'rgba(255, 165, 0, 0.8)',
-            paddingHorizontal: 20,
-            paddingVertical: 10,
-            borderRadius: 20,
-            boxShadow: '0px 2px 4px rgba(0,0,0,0.3)',
-            elevation: 3,
-            borderWidth: 1,
-            borderColor: 'rgba(255, 165, 0, 0.5)'
-          }}
-        >
-          <ThemedText style={{
-            color: 'white',
-            fontSize: 14,
-            fontWeight: 'bold'
-          }}>
-            <Ionicons name="refresh" size={14} color="white" /> Simulate Week Pass
-          </ThemedText>
+        <TouchableOpacity onPress={() => setModalVisible(true)} style={styles.addTaskButton}>
+          <Ionicons name="add" size={20} color="#FFFFFF" />
         </TouchableOpacity>
       </ThemedView>
 
@@ -590,252 +523,347 @@ export default function TasksScreen() {
         data={tasks}
         renderItem={renderTask}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={{ paddingBottom: 20 }}
+        numColumns={numColumns}
+        contentContainerStyle={styles.tasksList}
         showsVerticalScrollIndicator={false}
-        ListEmptyComponent={
-          <ThemedView style={{
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 40,
-            marginTop: 20
-          }}>
-            <Ionicons name="list" size={48} color="#FFFFFF" style={{ marginBottom: 20 }} />
-            <ThemedText style={{
-              fontSize: 20,
-              fontWeight: 'bold',
-              color: '#FFFFFF',
-              textAlign: 'center',
-              marginBottom: 10
-            }}>
-              No tasks yet!
-            </ThemedText>
-            <ThemedText style={{
-              fontSize: 16,
-              color: '#B0B0B0',
-              textAlign: 'center',
-              lineHeight: 24
-            }}>
-              Create your first task to start earning points and building great habits.
-            </ThemedText>
-          </ThemedView>
-        }
       />
 
+      <ThemedView style={styles.footer}>
+        <TouchableOpacity onPress={simulateDayPass} style={styles.simulateButton}>
+          <ThemedText style={styles.simulateButtonText}>Simulate Day Pass</ThemedText>
+        </TouchableOpacity>
+      </ThemedView>
+
+      {/* Task Dropdown Menu */}
+      <Modal
+        visible={dropdownVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setDropdownVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.dropdownOverlay}
+          activeOpacity={1}
+          onPress={() => setDropdownVisible(false)}
+        >
+          <ThemedView style={[styles.dropdownContent, {
+            position: 'absolute',
+            left: dropdownPosition.x,
+            top: dropdownPosition.y,
+          }]}>
+            <TouchableOpacity
+              style={styles.dropdownItem}
+              onPress={() => {
+                const task = tasks.find(t => t.id === dropdownTaskId);
+                if (task) {
+                  setSelectedTask(task);
+                  setTaskName(task.name || '');
+                  setPoints((task.points || 0).toString());
+                  setUrgency(task.urgency || '3');
+                  setMaxDailyCompletions((task.maxDailyCompletions || 1).toString());
+                  setEditModalVisible(true);
+                }
+                setDropdownVisible(false);
+              }}
+            >
+              <Ionicons name="pencil" size={16} color="#FFFFFF" />
+              <ThemedText style={styles.dropdownItemText}>Edit</ThemedText>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.dropdownItem}
+              onPress={() => {
+                if (dropdownTaskId) {
+                  toggleUrgency(dropdownTaskId);
+                }
+                setDropdownVisible(false);
+              }}
+            >
+              <Ionicons name="alert-circle" size={16} color="#FFFFFF" />
+              <ThemedText style={styles.dropdownItemText}>Enable Urgency</ThemedText>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.dropdownItem}
+              onPress={() => {
+                const task = tasks.find(t => t.id === dropdownTaskId);
+                if (task) {
+                  setSelectedTask(task);
+                  deleteTask();
+                }
+                setDropdownVisible(false);
+              }}
+            >
+              <Ionicons name="trash" size={16} color="#FF6B6B" />
+              <ThemedText style={[styles.dropdownItemText, { color: '#FF6B6B' }]}>Remove</ThemedText>
+            </TouchableOpacity>
+          </ThemedView>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Add Task Modal */}
       <Modal
         visible={modalVisible}
         animationType="fade"
         transparent={true}
         onRequestClose={() => setModalVisible(false)}
       >
-        <ThemedView style={{
-          flex: 1,
-          justifyContent: 'center',
-          alignItems: 'center',
-          backgroundColor: 'rgba(0, 0, 0, 0.6)',
-          padding: 20
-        }}>
-          <ThemedView style={{
-            backgroundColor: '#1E1E1E',
-            borderRadius: 20,
-            padding: 25,
-            width: isMobile ? '95%' : 450,
-            maxHeight: '90%',
-            boxShadow: '0px 10px 20px rgba(0,0,0,0.5)',
-            elevation: 10
-          }}>
-            <ThemedView style={{
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 25,
-              paddingBottom: 15,
-              borderBottomWidth: 2,
-              borderBottomColor: '#333'
-            }}>
-              <ThemedText style={{
-                fontSize: 24,
-                fontWeight: 'bold',
-                color: '#FFFFFF'
-              }}>
-              <Ionicons name="add" size={20} color="#FFFFFF" /> Create New Task
-              </ThemedText>
-              <TouchableOpacity
-                onPress={() => setModalVisible(false)}
-                style={{
-                  width: 35,
-                  height: 35,
-                  borderRadius: 17.5,
-                  backgroundColor: '#333',
-                  justifyContent: 'center',
-                  alignItems: 'center'
-                }}
-              >
-                <Ionicons name="close" size={18} color="#B0B0B0" />
+        <ThemedView style={styles.modalOverlay}>
+          <ThemedView style={styles.modalContent}>
+            <ThemedView style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>Create New Task</ThemedText>
+              <TouchableOpacity onPress={() => setModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#B0B0B0" />
               </TouchableOpacity>
             </ThemedView>
 
-            <ThemedView style={{ marginBottom: 20 }}>
-              <ThemedText style={{
-                fontSize: 16,
-                fontWeight: '600',
-                color: '#FFFFFF',
-                marginBottom: 8
-              }}>
-                <Ionicons name="document-text" size={16} color="#FFFFFF" /> Task Name
-              </ThemedText>
-              <TextInput
-                placeholder="What task do you want to accomplish?"
-                value={taskName}
-                onChangeText={setTaskName}
-                style={{
-                  borderWidth: 2,
-                  borderColor: '#444',
-                  borderRadius: 12,
-                  padding: 15,
-                  fontSize: 16,
-                  backgroundColor: '#2A2A2A',
-                  color: '#FFFFFF',
-                  marginBottom: 5
-                }}
-                placeholderTextColor="#888"
-              />
-            </ThemedView>
-
-            <ThemedView style={{ flexDirection: isMobile ? 'column' : 'row', marginBottom: 20 }}>
-              <ThemedView style={{ flex: 1, marginRight: isMobile ? 0 : 10, marginBottom: isMobile ? 15 : 0 }}>
-                <ThemedText style={{
-                  fontSize: 16,
-                  fontWeight: '600',
-                  color: '#FFFFFF',
-                  marginBottom: 8
-                }}>
-                  <Ionicons name="flash" size={16} color="#FFFFFF" /> Urgency (1-5)
-                </ThemedText>
+            <ThemedView style={styles.form}>
+              <ThemedView style={styles.inputGroup}>
+                <ThemedView style={styles.inputLabel}>
+                  <Ionicons name="document-text" size={16} color="#FFFFFF" />
+                  <ThemedText style={styles.labelText}>Task Name</ThemedText>
+                </ThemedView>
                 <TextInput
-                  placeholder="1-5"
-                  value={urgency}
-                  onChangeText={setUrgency}
-                  keyboardType="numeric"
-                  style={{
-                    borderWidth: 2,
-                    borderColor: '#444',
-                    borderRadius: 12,
-                    padding: 15,
-                    fontSize: 16,
-                    backgroundColor: '#2A2A2A',
-                    color: '#FFFFFF',
-                    textAlign: 'center'
-                  }}
+                  placeholder="What task do you want to accomplish?"
+                  value={taskName}
+                  onChangeText={setTaskName}
+                  style={styles.textInput}
                   placeholderTextColor="#888"
                 />
               </ThemedView>
 
-              <ThemedView style={{ flex: 1, marginLeft: isMobile ? 0 : 10 }}>
-                <ThemedText style={{
-                  fontSize: 16,
-                  fontWeight: '600',
-                  color: '#FFFFFF',
-                  marginBottom: 8
-                }}>
-                  <Ionicons name="trophy" size={16} color="#FFFFFF" /> Points
-                </ThemedText>
+              <ThemedView style={styles.rowInputs}>
+                <ThemedView style={styles.inputGroup}>
+                  <ThemedView style={styles.inputLabel}>
+                    <Ionicons name="trophy" size={16} color="#FFFFFF" />
+                    <ThemedText style={styles.labelText}>Points</ThemedText>
+                  </ThemedView>
+                  <TextInput
+                    placeholder="10"
+                    value={points}
+                    onChangeText={setPoints}
+                    keyboardType="numeric"
+                    style={styles.textInput}
+                    placeholderTextColor="#888"
+                  />
+                </ThemedView>
+
+                <ThemedView style={styles.inputGroup}>
+                  <ThemedView style={styles.inputLabel}>
+                    <Ionicons name="flash" size={16} color="#FFFFFF" />
+                    <ThemedText style={styles.labelText}>Urgency (1-3)</ThemedText>
+                  </ThemedView>
+                  <TextInput
+                    placeholder="3"
+                    value={urgency}
+                    onChangeText={setUrgency}
+                    keyboardType="numeric"
+                    style={styles.textInput}
+                    placeholderTextColor="#888"
+                  />
+                </ThemedView>
+              </ThemedView>
+
+              <ThemedView style={styles.inputGroup}>
+                <ThemedView style={styles.inputLabel}>
+                  <Ionicons name="repeat" size={16} color="#FFFFFF" />
+                  <ThemedText style={styles.labelText}>Max Daily Completions</ThemedText>
+                </ThemedView>
                 <TextInput
-                  placeholder="Points value"
-                  value={points}
-                  onChangeText={setPoints}
+                  placeholder="5"
+                  value={maxDailyCompletions}
+                  onChangeText={setMaxDailyCompletions}
                   keyboardType="numeric"
-                  style={{
-                    borderWidth: 2,
-                    borderColor: '#444',
-                    borderRadius: 12,
-                    padding: 15,
-                    fontSize: 16,
-                    backgroundColor: '#2A2A2A',
-                    color: '#FFFFFF',
-                    textAlign: 'center'
-                  }}
+                  style={styles.textInput}
                   placeholderTextColor="#888"
                 />
               </ThemedView>
+
+              <ThemedView style={styles.modalButtons}>
+                <TouchableOpacity
+                  onPress={() => setModalVisible(false)}
+                  style={styles.cancelButton}
+                >
+                  <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={createTask} style={styles.createButton}>
+                  <Ionicons name="checkmark" size={16} color="white" />
+                  <ThemedText style={styles.createButtonText}>Create Task</ThemedText>
+                </TouchableOpacity>
+              </ThemedView>
+            </ThemedView>
+          </ThemedView>
+        </ThemedView>
+      </Modal>
+
+      {/* Daily Limit Modal */}
+      <Modal
+        visible={limitModalVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setLimitModalVisible(false)}
+      >
+        <ThemedView style={styles.modalOverlay}>
+          <ThemedView style={styles.modalContent}>
+            <ThemedView style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>Daily Limit Reached</ThemedText>
             </ThemedView>
 
-            <ThemedView style={{ marginBottom: 30 }}>
-              <ThemedText style={{
-                fontSize: 16,
-                fontWeight: '600',
-                color: '#FFFFFF',
-                marginBottom: 8
-              }}>
-                <Ionicons name="repeat" size={16} color="#FFFFFF" /> Max Daily Completions
-              </ThemedText>
-              <TextInput
-                placeholder="How many times per day? (optional, unlimited if empty)"
-                value={maxDaily}
-                onChangeText={setMaxDaily}
-                keyboardType="numeric"
-                style={{
-                  borderWidth: 2,
-                  borderColor: '#444',
-                  borderRadius: 12,
-                  padding: 15,
-                  fontSize: 16,
-                  backgroundColor: '#2A2A2A',
-                  color: '#FFFFFF'
-                }}
-                placeholderTextColor="#888"
-              />
-            </ThemedView>
+            <ThemedText style={styles.limitMessage}>
+              You've reached the maximum daily completions for this task. Would you like to complete it anyway?
+            </ThemedText>
 
-            <ThemedView style={{
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              paddingTop: 20,
-              borderTopWidth: 2,
-              borderTopColor: '#333'
-            }}>
+            <ThemedView style={styles.modalButtons}>
               <TouchableOpacity
-                onPress={() => setModalVisible(false)}
-                style={{
-                  backgroundColor: '#333',
-                  paddingHorizontal: 25,
-                  paddingVertical: 12,
-                  borderRadius: 25,
-                  borderWidth: 2,
-                  borderColor: '#444',
-                  flex: 1,
-                  marginRight: 10
+                onPress={() => {
+                  setLimitModalVisible(false);
+                  setPendingCompletion(null);
                 }}
+                style={styles.cancelButton}
               >
-                <ThemedText style={{
-                  textAlign: 'center',
-                  fontSize: 16,
-                  fontWeight: '600',
-                  color: '#B0B0B0'
-                }}>
-                  Cancel
-                </ThemedText>
+                <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={forceCompleteTask} style={styles.createButton}>
+                <ThemedText style={styles.createButtonText}>Complete Anyway</ThemedText>
+              </TouchableOpacity>
+            </ThemedView>
+          </ThemedView>
+        </ThemedView>
+      </Modal>
+
+      {/* Edit Task Modal */}
+      <Modal
+        visible={editModalVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setEditModalVisible(false)}
+      >
+        <ThemedView style={styles.modalOverlay}>
+          <ThemedView style={styles.modalContent}>
+            <ThemedView style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>Edit Task</ThemedText>
+              <ThemedView style={styles.headerButtons}>
+                <TouchableOpacity onPress={deleteTask} style={styles.headerDeleteButton}>
+                  <Ionicons name="trash" size={20} color="#FF6B6B" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setEditModalVisible(false)}>
+                  <Ionicons name="close" size={24} color="#B0B0B0" />
+                </TouchableOpacity>
+              </ThemedView>
+            </ThemedView>
+
+            <ScrollView style={styles.modalScroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+              <ThemedView style={styles.form}>
+                <ThemedView style={styles.inputGroup}>
+                  <ThemedView style={styles.inputLabel}>
+                    <Ionicons name="document-text" size={16} color="#FFFFFF" />
+                    <ThemedText style={styles.labelText}>Task Name</ThemedText>
+                  </ThemedView>
+                  <TextInput
+                    placeholder="What task do you want to accomplish?"
+                    value={taskName}
+                    onChangeText={setTaskName}
+                    style={styles.textInput}
+                    placeholderTextColor="#888"
+                  />
+                </ThemedView>
+
+                <ThemedView style={styles.rowInputs}>
+                  <ThemedView style={styles.inputGroup}>
+                    <ThemedView style={styles.inputLabel}>
+                      <Ionicons name="trophy" size={16} color="#FFFFFF" />
+                      <ThemedText style={styles.labelText}>Points</ThemedText>
+                    </ThemedView>
+                    <TextInput
+                      placeholder="10"
+                      value={points}
+                      onChangeText={setPoints}
+                      keyboardType="numeric"
+                      style={styles.textInput}
+                      placeholderTextColor="#888"
+                    />
+                  </ThemedView>
+
+                  <ThemedView style={styles.inputGroup}>
+                    <ThemedView style={styles.inputLabel}>
+                      <Ionicons name="flash" size={16} color="#FFFFFF" />
+                      <ThemedText style={styles.labelText}>Urgency (1-3)</ThemedText>
+                    </ThemedView>
+                    <TextInput
+                      placeholder="3"
+                      value={urgency}
+                      onChangeText={setUrgency}
+                      keyboardType="numeric"
+                      style={styles.textInput}
+                      placeholderTextColor="#888"
+                    />
+                  </ThemedView>
+                </ThemedView>
+
+                <ThemedView style={styles.inputGroup}>
+                  <ThemedView style={styles.inputLabel}>
+                    <Ionicons name="repeat" size={16} color="#FFFFFF" />
+                    <ThemedText style={styles.labelText}>Max Daily Completions</ThemedText>
+                  </ThemedView>
+                  <TextInput
+                    placeholder="5"
+                    value={maxDailyCompletions}
+                    onChangeText={setMaxDailyCompletions}
+                    keyboardType="numeric"
+                    style={styles.textInput}
+                    placeholderTextColor="#888"
+                  />
+                </ThemedView>
+
+                <ThemedView style={styles.modalButtons}>
+                  <TouchableOpacity
+                    onPress={() => setEditModalVisible(false)}
+                    style={styles.cancelButton}
+                  >
+                    <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={editTask} style={styles.createButton}>
+                    <Ionicons name="checkmark" size={16} color="white" />
+                    <ThemedText style={styles.createButtonText}>Update Task</ThemedText>
+                  </TouchableOpacity>
+                </ThemedView>
+            </ThemedView>
+            </ScrollView>
+          </ThemedView>
+        </ThemedView>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        visible={deleteModalVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setDeleteModalVisible(false)}
+      >
+        <ThemedView style={styles.modalOverlay}>
+          <ThemedView style={styles.deleteModalContent}>
+            <ThemedView style={styles.deleteModalHeader}>
+              <Ionicons name="warning" size={48} color="#FF6B6B" />
+              <ThemedText style={styles.deleteModalTitle}>Delete Task</ThemedText>
+            </ThemedView>
+
+            <ThemedText style={styles.deleteModalMessage}>
+              Are you sure you want to delete "{selectedTask?.name}"? This will also delete all its completion records and cannot be undone.
+            </ThemedText>
+
+            <ThemedView style={styles.deleteModalButtons}>
+              <TouchableOpacity
+                onPress={() => setDeleteModalVisible(false)}
+                style={styles.deleteCancelButton}
+              >
+                <ThemedText style={styles.deleteCancelButtonText}>Cancel</ThemedText>
               </TouchableOpacity>
               <TouchableOpacity
-                onPress={addTask}
-                style={{
-                  backgroundColor: '#667EEA',
-                  paddingHorizontal: 25,
-                  paddingVertical: 12,
-                  borderRadius: 25,
-                  flex: 1,
-                  marginLeft: 10,
-                  boxShadow: '0px 4px 8px rgba(102,126,234,0.3)',
-                  elevation: 4
-                }}
+                onPress={confirmDeleteTask}
+                style={styles.deleteConfirmButton}
               >
-                <ThemedText style={{
-                  color: 'white',
-                  textAlign: 'center',
-                  fontSize: 16,
-                  fontWeight: 'bold'
-                }}>
-                  <Ionicons name="checkmark" size={16} color="white" /> Create Task
-                </ThemedText>
+                <Ionicons name="trash" size={16} color="white" />
+                <ThemedText style={styles.deleteConfirmButtonText}>Delete</ThemedText>
               </TouchableOpacity>
             </ThemedView>
           </ThemedView>
@@ -844,3 +872,368 @@ export default function TasksScreen() {
     </ThemedView>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#121212',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: isMobile ? 20 : 40,
+    paddingTop: 60,
+    paddingBottom: 20,
+  },
+  headerLeft: {
+    flex: 1,
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  weeklyTotal: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFD700',
+    marginTop: 4,
+  },
+  addTaskButton: {
+    backgroundColor: '#667EEA',
+    borderRadius: 25,
+    width: 50,
+    height: 50,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tasksList: {
+    paddingHorizontal: isMobile ? 20 : 40,
+    paddingBottom: 100,
+  },
+  taskContainer: {
+    position: 'relative',
+    marginHorizontal: numColumns > 1 ? 8 : 0,
+    marginVertical: 8,
+  },
+  taskCard: {
+    flexDirection: 'row',
+    backgroundColor: '#1E1E1E',
+    borderRadius: 12,
+    padding: 15,
+    flex: numColumns > 1 ? 1 : undefined,
+    borderLeftWidth: 4,
+    borderLeftColor: '#42A5F5',
+  },
+  taskContent: {
+    flex: 1,
+    marginRight: 15,
+  },
+  taskHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  taskTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    flex: 1,
+  },
+  urgencyIndicator: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#FFD700',
+    marginLeft: 8,
+  },
+  taskPoints: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFD700',
+  },
+  taskActions: {
+    width: 50,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  addButton: {
+    backgroundColor: '#4CAF50',
+    borderRadius: 25,
+    width: 45,
+    height: 45,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  removeButton: {
+    backgroundColor: '#F44336',
+    borderRadius: 25,
+    width: 45,
+    height: 45,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  menuButton: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    padding: 5,
+    zIndex: 1,
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  footer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: isMobile ? 20 : 40,
+    paddingBottom: 30,
+    paddingTop: 15,
+    backgroundColor: 'rgba(18, 18, 18, 0.9)',
+  },
+  simulateButton: {
+    backgroundColor: '#667EEA',
+    borderRadius: 25,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  simulateButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#121212',
+  },
+  loadingText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginTop: 20,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#1E1E1E',
+    borderRadius: 20,
+    padding: 25,
+    width: isMobile ? '95%' : 450,
+    height: 600,
+  },
+  modalScroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 25,
+  },
+  headerButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerDeleteButton: {
+    marginRight: 15,
+    padding: 5,
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  form: {
+    marginBottom: 25,
+  },
+  inputGroup: {
+    marginBottom: 20,
+  },
+  rowInputs: {
+    flexDirection: isMobile ? 'column' : 'row',
+    marginBottom: 20,
+  },
+  inputLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  labelText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  textInput: {
+    borderWidth: 2,
+    borderColor: '#444',
+    borderRadius: 12,
+    padding: 15,
+    fontSize: 16,
+    backgroundColor: '#2A2A2A',
+    color: '#FFFFFF',
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  cancelButton: {
+    backgroundColor: '#333',
+    paddingHorizontal: 25,
+    paddingVertical: 12,
+    borderRadius: 25,
+    flex: 1,
+    marginRight: 10,
+    alignItems: 'center',
+  },
+  cancelButtonText: {
+    color: '#B0B0B0',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  createButton: {
+    backgroundColor: '#667EEA',
+    paddingHorizontal: 25,
+    paddingVertical: 12,
+    borderRadius: 25,
+    flex: 1,
+    marginLeft: 10,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  createButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginLeft: 5,
+  },
+  limitMessage: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    textAlign: 'center',
+    marginBottom: 25,
+    lineHeight: 24,
+  },
+  editButtons: {
+    marginTop: 25,
+  },
+  deleteButton: {
+    backgroundColor: '#FF6B6B',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 25,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 15,
+  },
+  deleteButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginLeft: 5,
+  },
+  deleteModalContent: {
+    backgroundColor: '#1E1E1E',
+    borderRadius: 20,
+    padding: 25,
+    width: isMobile ? '90%' : 400,
+    alignItems: 'center',
+  },
+  deleteModalHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  deleteModalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginTop: 10,
+  },
+  deleteModalMessage: {
+    fontSize: 16,
+    color: '#CCCCCC',
+    textAlign: 'center',
+    lineHeight: 24,
+    marginBottom: 30,
+  },
+  deleteModalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  deleteCancelButton: {
+    flex: 1,
+    backgroundColor: '#333333',
+    borderRadius: 10,
+    padding: 15,
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  deleteCancelButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  deleteConfirmButton: {
+    flex: 1,
+    backgroundColor: '#FF6B6B',
+    borderRadius: 10,
+    padding: 15,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  deleteConfirmButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginLeft: 5,
+  },
+  dropdownOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  dropdownContent: {
+    backgroundColor: '#2A2A2A',
+    borderRadius: 10,
+    padding: 5,
+    minWidth: 150,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 5,
+  },
+  dropdownItemText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    marginLeft: 8,
+  },
+});

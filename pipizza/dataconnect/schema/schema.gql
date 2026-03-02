@@ -14,6 +14,7 @@ type Task @table {
   createdAt: Timestamp!
   description: String
   isRepeating: Boolean
+  urgencyMode: Boolean
 }
 
 type TaskCompletion @table {

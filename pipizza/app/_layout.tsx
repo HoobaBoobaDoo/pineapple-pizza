@@ -13,19 +13,24 @@ export const unstable_settings = {
 };
 
 function AppContent() {
-  const { user, loading } = useAuth();
+  const { user, userData, loading } = useAuth();
   const colorScheme = useColorScheme();
   const router = useRouter();
 
   React.useEffect(() => {
     if (!loading) {
       if (user) {
-        router.replace('/(tabs)');
+        // Check if user has completed setup (has nickname)
+        if (!userData?.nickname || userData.nickname.trim() === '') {
+          router.replace('/(auth)/setup');
+        } else {
+          router.replace('/(tabs)');
+        }
       } else {
         router.replace('/(auth)/login');
       }
     }
-  }, [user, loading, router]);
+  }, [user, userData, loading, router]);
 
   if (loading) {
     return (

@@ -4,13 +4,12 @@ import { Link, router } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/AuthContext';
-import { auth, db } from '@/lib/AuthContext';
 import { doc, getDoc } from 'firebase/firestore';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const { login, googleLogin } = useAuth();
+  const { login, googleLogin, auth, db } = useAuth();
 
   const handleLogin = async () => {
     try {
@@ -34,6 +33,10 @@ export default function LoginScreen() {
             router.replace('/(auth)/setup');
             return;
           }
+        } else {
+          // New user - redirect to setup
+          router.replace('/(auth)/setup');
+          return;
         }
       }
       router.replace('/(tabs)');
@@ -64,7 +67,8 @@ export default function LoginScreen() {
       />
       <TouchableOpacity onPress={handleLogin} style={{ backgroundColor: '#007AFF', padding: 15, borderRadius: 5, alignItems: 'center' }}>
         <ThemedText style={{ color: 'white' }}>Login</ThemedText>
-      </TouchableOpacity>      <TouchableOpacity onPress={handleGoogleLogin} style={{ backgroundColor: '#DB4437', padding: 15, borderRadius: 5, alignItems: 'center', marginTop: 10 }}>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={handleGoogleLogin} style={{ backgroundColor: '#DB4437', padding: 15, borderRadius: 5, alignItems: 'center', marginTop: 10 }}>
         <ThemedText style={{ color: 'white' }}>Login with Google</ThemedText>
       </TouchableOpacity>      <Link href="/(auth)/signup" style={{ marginTop: 20, textAlign: 'center' }}>
         <ThemedText>Dont have an account? Sign up</ThemedText>

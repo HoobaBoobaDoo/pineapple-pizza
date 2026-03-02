@@ -1,7 +1,7 @@
 import { StyleSheet, TouchableOpacity } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { useAuth, auth, db } from '@/lib/AuthContext';
+import { useAuth } from '@/lib/AuthContext';
 import { useEffect, useState } from 'react';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 
@@ -16,7 +16,7 @@ interface DailySummary {
 }
 
 export default function HomeScreen() {
-  const { user, userData, logout } = useAuth();
+  const { user, userData, logout, auth, db } = useAuth();
   const [summary, setSummary] = useState<DailySummary | null>(null);
   const [loading, setLoading] = useState(true);
 
